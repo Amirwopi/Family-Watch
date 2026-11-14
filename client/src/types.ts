@@ -9,6 +9,11 @@ export interface User {
   clientTime?: number;
   isMuted?: boolean;
   isSpeaking?: boolean;
+  bufferAhead?: number; // seconds of buffer ahead of current playback position
+  bufferedEnd?: number;
+  isBuffering?: boolean;
+  pingMs?: number;
+  downloadSpeedKbps?: number;
 }
 
 export interface SubtitleTrack {
@@ -98,15 +103,34 @@ export interface ReactionPayload {
   xOffset?: number; // randomized horizontal position for UI
 }
 
+export interface RoomSettings {
+  allowMemberControls: boolean;
+  autoPlayNext: boolean;
+  enableBufferSync: boolean; // Pre-buffering sync gate
+  targetBufferMinutes: number; // Target buffer ahead (default 5 min = 300s)
+  minBufferSeconds: number; // Minimum buffer threshold during playback (default 60s)
+}
+
+export interface BufferSyncState {
+  isSyncBuffering: boolean;
+  targetSeconds: number;
+  minSeconds: number;
+  reason: 'initial' | 'low_buffer';
+  starvingUser?: {
+    socketId: string;
+    username: string;
+    bufferAhead: number;
+    required: number;
+  };
+}
+
 export interface RoomState {
   currentQueueItemId: string | null;
   activeStreamSource: 'original' | string;
   playback: PlaybackState;
   queue: QueueItem[];
   users: Record<string, User>;
-  settings: {
-    allowMemberControls: boolean;
-    autoPlayNext: boolean;
-  };
+  settings: RoomSettings;
+  bufferSync?: BufferSyncState;
 }
 

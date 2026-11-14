@@ -16,6 +16,8 @@ import {
   Upload,
   MessageSquare,
   Clock,
+  Activity,
+  Copy,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.js';
 import { useSocket } from '../context/SocketContext.js';
@@ -28,6 +30,9 @@ import { SubtitleStyleSettings, SubtitleTrack } from '../types.js';
 import { CustomSubtitleOverlay } from './CustomSubtitleOverlay.js';
 import { SubtitleSettingsModal } from './SubtitleSettingsModal.js';
 import { FloatingChatOverlay } from './FloatingChatOverlay.js';
+import { StatsForNerdsOverlay } from './StatsForNerdsOverlay.js';
+import { BufferSyncOverlay } from './BufferSyncOverlay.js';
+import { VideoPreloader } from '../utils/videoPreloader.js';
 
 export const VideoPlayer: React.FC = () => {
   const { username, isAdmin } = useAuth();
@@ -36,9 +41,12 @@ export const VideoPlayer: React.FC = () => {
     activeVideo,
     sendPlay,
     sendPause,
+    sendForcePlay,
     sendSeek,
     sendSourceChange,
     attachSubtitleToCurrentVideo,
+    sendBufferStatus,
+    measurePing,
   } = useSocket();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -54,6 +62,14 @@ export const VideoPlayer: React.FC = () => {
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
   const [drift, setDrift] = useState<number>(0);
   const [bufferedEnd, setBufferedEnd] = useState<number>(0);
+
+  // YouTube Stats for nerds & Ping debugger
+  const [showStatsForNerds, setShowStatsForNerds] = useState<boolean>(false);
+  const [pingMs, setPingMs] = useState<number>(0);
+  const [bufferAheadSec, setBufferAheadSec] = useState<number>(0);
+  const [speedKbps, setSpeedKbps] = useState<number>(3500);
+  const [networkActivityKB, setNetworkActivityKB] = useState<number>(180);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
   // Subtitle states
   const [selectedSubtitleId, setSelectedSubtitleId] = useState<string>('off');
@@ -220,6 +236,85 @@ export const VideoPlayer: React.FC = () => {
     }, 3500);
   };
 
+  // Periodic roundtrip ping measurement to server
+  useEffect(() => {
+    const measure = async () => {
+      const p = await measurePing();
+      if (p > 0) setPingMs(p);
+    };
+    measure();
+    const interval = setInterval(measure, 2000);
+    return () => clearInterval(interval);
+  }, [measurePing]);
+
+  // Periodic buffer health reporter & progressive background preloader (every 1s)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      const cur = video.currentTime;
+      let ahead = 0;
+      if (video.buffered && video.buffered.length > 0) {
+        for (let i = 0; i < video.buffered.length; i++) {
+          const start = video.buffered.start(i);
+          const end = video.buffered.end(i);
+          if (cur >= start - 1 && cur <= end) {
+            ahead = Math.max(0, end - cur);
+            break;
+          }
+        }
+      }
+
+      setBufferAheadSec(ahead);
+
+      const stats = VideoPreloader.getStats();
+      setSpeedKbps(stats.speedKbps);
+      setNetworkActivityKB(stats.networkActivityKB);
+
+      // Report buffer health to server
+      sendBufferStatus({
+        bufferAhead: Math.round(ahead),
+        bufferedEnd: video.buffered?.length ? video.buffered.end(video.buffered.length - 1) : 0,
+        currentTime: cur,
+        pingMs,
+        downloadSpeedKbps: stats.speedKbps,
+        isBuffering: video.readyState < 3,
+      });
+
+      // Background progressive range preloading to download minutes ahead
+      const targetSec = roomState?.bufferSync?.targetSeconds || 300;
+      if (streamUrl && ahead < targetSec) {
+        VideoPreloader.pump(streamUrl, ahead, targetSec);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [streamUrl, pingMs, sendBufferStatus, roomState?.bufferSync?.targetSeconds]);
+
+  // Keyboard shortcut Shift+D for Stats for Nerds
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+        setShowStatsForNerds((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Custom Context Menu on Video
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  };
+
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    window.addEventListener('click', handleClick);
+    return () => window.removeEventListener('click', handleClick);
+  }, []);
+
   // Play / Pause toggle
   const togglePlay = () => {
     if (!canControl) return;
@@ -360,7 +455,71 @@ export const VideoPlayer: React.FC = () => {
         preload="auto"
         className="w-full h-full object-contain max-h-[calc(100vh-8.5rem)] cursor-pointer"
         onClick={togglePlay}
+        onContextMenu={handleContextMenu}
       />
+
+      {/* YouTube Stats for nerds (دیباگر و اطلاعات فنی مثل یوتیوب) */}
+      <StatsForNerdsOverlay
+        isOpen={showStatsForNerds}
+        onClose={() => setShowStatsForNerds(false)}
+        videoRef={videoRef}
+        activeVideo={activeVideo}
+        pingMs={pingMs}
+        drift={drift}
+        bufferAheadSec={bufferAheadSec}
+        speedKbps={speedKbps}
+        networkActivityKB={networkActivityKB}
+      />
+
+      {/* Smart Buffer Sync Overlay (لودینگ انیمیشنی برای دانلود حداقل ۵ دقیقه جلوتر و توقف هنگام کمتر از ۱ دقیقه) */}
+      <BufferSyncOverlay onForcePlay={() => sendForcePlay(currentTime)} />
+
+      {/* Custom Context Menu on Video */}
+      {contextMenu && (
+        <div
+          style={{ top: contextMenu.y, left: contextMenu.x }}
+          className="fixed z-50 bg-slate-900/95 border border-slate-700/80 rounded-xl shadow-2xl py-1.5 min-w-[210px] text-xs font-['Vazirmatn'] backdrop-blur-md animate-in fade-in zoom-in-95"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              setShowStatsForNerds((prev) => !prev);
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-2 hover:bg-indigo-600/20 text-slate-200 hover:text-white flex items-center justify-between transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <Activity className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Stats for nerds (دیباگر یوتیوب)</span>
+            </span>
+            <span className="text-[10px] text-slate-500 font-mono">Shift+D</span>
+          </button>
+
+          <button
+            onClick={() => {
+              syncPlayback();
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-2 hover:bg-indigo-600/20 text-slate-200 hover:text-white flex items-center gap-2 transition-colors"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-emerald-400" />
+            <span>همگام‌سازی مجدد با پخش</span>
+          </button>
+
+          {activeVideo && (
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(activeVideo.url || window.location.href);
+                setContextMenu(null);
+              }}
+              className="w-full text-left px-3 py-2 hover:bg-indigo-600/20 text-slate-200 hover:text-white flex items-center gap-2 transition-colors border-t border-slate-800"
+            >
+              <Copy className="w-3.5 h-3.5 text-amber-400" />
+              <span>کپی لینک استریم ویدیو</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Custom High-Fidelity Subtitle Overlay with Full Styling Controls */}
       <CustomSubtitleOverlay
@@ -715,6 +874,28 @@ export const VideoPlayer: React.FC = () => {
                 </div>
               )}
             </div>
+
+            {/* Stats for Nerds Toggle Button */}
+            <button
+              onClick={() => setShowStatsForNerds(!showStatsForNerds)}
+              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs ${
+                showStatsForNerds
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'hover:bg-white/10 text-slate-300 hover:text-white'
+              }`}
+              title="Stats for nerds (اطلاعات فنی و پینگ مثل یوتیوب - Shift+D)"
+            >
+              <Activity className="w-4 h-4" />
+              {pingMs > 0 && (
+                <span
+                  className={`text-[10px] font-mono hidden sm:inline ${
+                    pingMs <= 50 ? 'text-emerald-400' : pingMs <= 120 ? 'text-amber-400' : 'text-red-400'
+                  }`}
+                >
+                  {pingMs}ms
+                </span>
+              )}
+            </button>
 
             {/* Fullscreen Button */}
             <button

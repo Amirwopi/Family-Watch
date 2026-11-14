@@ -21,6 +21,15 @@ export class RoomService {
     static settings = {
         allowMemberControls: false, // Only admin can control unless enabled
         autoPlayNext: true,
+        enableBufferSync: true, // Smart buffer sync enabled by default
+        targetBufferMinutes: 5, // 5 minutes ahead initial target
+        minBufferSeconds: 60, // 1 minute minimum while playing
+    };
+    static bufferSync = {
+        isSyncBuffering: false,
+        targetSeconds: 300,
+        minSeconds: 60,
+        reason: 'initial',
     };
     static initialize(io) {
         this.io = io;
@@ -78,7 +87,83 @@ export class RoomService {
             queue: QueueService.getQueue(),
             users: usersRecord,
             settings: this.settings,
+            bufferSync: this.bufferSync,
         };
+    }
+    /**
+     * Evaluates buffer health across all connected watching users.
+     * If any user has < minSeconds (60s) buffer, pauses playback and enters sync mode.
+     * When all users have >= required buffer, resumes playback.
+     */
+    static evaluateBufferSync() {
+        if (!this.settings.enableBufferSync || !this.currentQueueItemId) {
+            if (this.bufferSync.isSyncBuffering) {
+                this.bufferSync.isSyncBuffering = false;
+                this.bufferSync.starvingUser = undefined;
+                this.broadcastRoomState();
+            }
+            return;
+        }
+        const activeItem = QueueService.getItem(this.currentQueueItemId);
+        const duration = activeItem?.duration || 0;
+        const currentTime = this.getCurrentCalculatedTime();
+        const remainingTime = duration > 0 ? Math.max(0, duration - currentTime) : 999999;
+        const watchingUsers = Array.from(this.users.values()).filter((u) => u.status === 'watching' || u.status === 'buffering');
+        if (watchingUsers.length === 0)
+            return;
+        const targetSec = Math.min(this.settings.targetBufferMinutes * 60, remainingTime > 0 ? remainingTime : 300);
+        const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 60);
+        // 1. If currently playing: check if anyone is below minSec (e.g. 60s)
+        if (this.playback.isPlaying) {
+            if (remainingTime > 15) {
+                const starvingUser = watchingUsers.find((u) => typeof u.bufferAhead === 'number' && (u.bufferAhead < minSec || u.isBuffering));
+                if (starvingUser) {
+                    // Pause playback!
+                    this.playback.currentTime = currentTime;
+                    this.playback.isPlaying = false;
+                    this.playback.updatedAt = Date.now();
+                    this.bufferSync = {
+                        isSyncBuffering: true,
+                        targetSeconds: targetSec,
+                        minSeconds: minSec,
+                        reason: 'low_buffer',
+                        starvingUser: {
+                            socketId: starvingUser.socketId,
+                            username: starvingUser.username,
+                            bufferAhead: starvingUser.bufferAhead ?? 0,
+                            required: minSec,
+                        },
+                    };
+                    this.broadcastPlaybackSync();
+                    this.broadcastRoomState();
+                    this.addSystemMessage(`⚠️ پخش متوقف شد: سرعت دانلود «${starvingUser.username}» کمتر از ۱ دقیقه بافر دارد (${Math.round(starvingUser.bufferAhead ?? 0)} ثانیه). در حال بارگذاری هماهنگ...`);
+                }
+            }
+        }
+        else if (this.bufferSync.isSyncBuffering) {
+            // 2. Room is waiting for everyone to buffer:
+            const requiredThreshold = this.bufferSync.reason === 'initial' ? Math.min(targetSec, 180) : minSec;
+            const stillStarving = watchingUsers.find((u) => (u.bufferAhead ?? 0) < requiredThreshold || u.isBuffering);
+            if (!stillStarving) {
+                // Everyone reached buffer! Resume playback!
+                this.bufferSync.isSyncBuffering = false;
+                this.bufferSync.starvingUser = undefined;
+                this.playback.isPlaying = true;
+                this.playback.updatedAt = Date.now();
+                this.broadcastPlaybackSync();
+                this.broadcastRoomState();
+                this.addSystemMessage(`✅ بافر تمام کاربران تکمیل شد! ادامه پخش ویدیو به صورت کاملاً هماهنگ.`);
+            }
+            else {
+                this.bufferSync.starvingUser = {
+                    socketId: stillStarving.socketId,
+                    username: stillStarving.username,
+                    bufferAhead: stillStarving.bufferAhead ?? 0,
+                    required: requiredThreshold,
+                };
+                this.broadcastRoomState();
+            }
+        }
     }
     static broadcastRoomState() {
         this.io.emit('room:state', this.getRoomState());
@@ -153,10 +238,54 @@ export class RoomService {
                     return;
                 const seekTime = typeof time === 'number' ? time : this.getCurrentCalculatedTime();
                 this.playback.currentTime = Math.max(0, seekTime);
+                // Check if BufferSync is enabled: if anyone is low on buffer, trigger buffer sync
+                if (this.settings.enableBufferSync && this.currentQueueItemId) {
+                    const activeItem = QueueService.getItem(this.currentQueueItemId);
+                    const duration = activeItem?.duration || 0;
+                    const remainingTime = duration > 0 ? Math.max(0, duration - this.playback.currentTime) : 999999;
+                    const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 60);
+                    const watchingUsers = Array.from(this.users.values()).filter((u) => u.status === 'watching' || u.status === 'buffering');
+                    const starving = watchingUsers.find((u) => typeof u.bufferAhead === 'number' && (u.bufferAhead < minSec || u.isBuffering));
+                    if (starving && remainingTime > 15) {
+                        this.playback.isPlaying = false;
+                        this.playback.updatedAt = Date.now();
+                        this.bufferSync = {
+                            isSyncBuffering: true,
+                            targetSeconds: Math.min(this.settings.targetBufferMinutes * 60, remainingTime),
+                            minSeconds: minSec,
+                            reason: 'low_buffer',
+                            starvingUser: {
+                                socketId: starving.socketId,
+                                username: starving.username,
+                                bufferAhead: starving.bufferAhead ?? 0,
+                                required: minSec,
+                            },
+                        };
+                        this.broadcastPlaybackSync();
+                        this.broadcastRoomState();
+                        this.addSystemMessage(`⚠️ کاربر «${starving.username}» به اندازه کافی (${minSec} ثانیه) بافر ندارد. در حال بافر هماهنگ...`);
+                        return;
+                    }
+                }
                 this.playback.isPlaying = true;
                 this.playback.updatedAt = Date.now();
                 this.broadcastPlaybackSync();
                 this.addSystemMessage(`${user.username} resumed playback at ${formatTime(this.playback.currentTime)}`);
+            });
+            // 3.1 Force Play (Admin or control bypass buffer sync)
+            socket.on('playback:force_play', (time) => {
+                const user = this.users.get(socket.id);
+                if (!user || (!user.isAdmin && !this.settings.allowMemberControls))
+                    return;
+                this.bufferSync.isSyncBuffering = false;
+                this.bufferSync.starvingUser = undefined;
+                const seekTime = typeof time === 'number' ? time : this.getCurrentCalculatedTime();
+                this.playback.currentTime = Math.max(0, seekTime);
+                this.playback.isPlaying = true;
+                this.playback.updatedAt = Date.now();
+                this.broadcastPlaybackSync();
+                this.broadcastRoomState();
+                this.addSystemMessage(`${user.username} پخش ویدیو را بدون انتظار برای بافر آغاز کرد.`);
             });
             // 4. Playback control: Pause
             socket.on('playback:pause', (time) => {
@@ -211,8 +340,20 @@ export class RoomService {
                 this.currentQueueItemId = queueItemId;
                 this.activeStreamSource = 'original';
                 this.playback.currentTime = 0;
-                this.playback.isPlaying = true;
                 this.playback.updatedAt = Date.now();
+                if (this.settings.enableBufferSync) {
+                    const targetSec = Math.min(this.settings.targetBufferMinutes * 60, item.duration || 300);
+                    this.bufferSync = {
+                        isSyncBuffering: true,
+                        targetSeconds: targetSec,
+                        minSeconds: Math.min(this.settings.minBufferSeconds, item.duration || 60),
+                        reason: 'initial',
+                    };
+                    this.playback.isPlaying = false;
+                }
+                else {
+                    this.playback.isPlaying = true;
+                }
                 this.broadcastRoomState();
                 this.addSystemMessage(`${user.username} changed video to "${item.title}".`);
             });
@@ -240,8 +381,20 @@ export class RoomService {
                     if (!this.currentQueueItemId) {
                         this.currentQueueItemId = newItem.id;
                         this.playback.currentTime = 0;
-                        this.playback.isPlaying = true;
                         this.playback.updatedAt = Date.now();
+                        if (this.settings.enableBufferSync) {
+                            const targetSec = Math.min(this.settings.targetBufferMinutes * 60, newItem.duration || 300);
+                            this.bufferSync = {
+                                isSyncBuffering: true,
+                                targetSeconds: targetSec,
+                                minSeconds: Math.min(this.settings.minBufferSeconds, newItem.duration || 60),
+                                reason: 'initial',
+                            };
+                            this.playback.isPlaying = false;
+                        }
+                        else {
+                            this.playback.isPlaying = true;
+                        }
                     }
                     this.broadcastRoomState();
                     this.addSystemMessage(`${user.username} added "${newItem.title}" to the queue.`);
@@ -364,6 +517,28 @@ export class RoomService {
                         status: data.status,
                         clientTime: data.currentTime,
                     });
+                }
+            });
+            // 16.1 Buffer health report from client
+            socket.on('playback:buffer_status', (data) => {
+                const user = this.users.get(socket.id);
+                if (!user)
+                    return;
+                user.bufferAhead = Math.max(0, data.bufferAhead || 0);
+                user.bufferedEnd = data.bufferedEnd;
+                user.clientTime = data.currentTime;
+                if (typeof data.pingMs === 'number')
+                    user.pingMs = data.pingMs;
+                if (typeof data.downloadSpeedKbps === 'number')
+                    user.downloadSpeedKbps = data.downloadSpeedKbps;
+                user.isBuffering = data.isBuffering ?? false;
+                user.status = data.isBuffering ? 'buffering' : 'watching';
+                this.evaluateBufferSync();
+            });
+            // 16.2 Roundtrip ping measurement
+            socket.on('ping:measure', (clientTime, callback) => {
+                if (typeof callback === 'function') {
+                    callback(Date.now());
                 }
             });
             // 17. Room settings update

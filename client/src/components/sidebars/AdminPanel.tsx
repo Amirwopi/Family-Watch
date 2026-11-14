@@ -15,6 +15,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { useSocket } from '../../context/SocketContext.js';
+import { RoomSettings } from '../../types.js';
 
 interface AdminPanelProps {
   onClose: () => void;
@@ -50,7 +51,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const queue = roomState?.queue || [];
-  const settings = roomState?.settings || { allowMemberControls: false, autoPlayNext: true };
+  const settings: RoomSettings = roomState?.settings || {
+    allowMemberControls: false,
+    autoPlayNext: true,
+    enableBufferSync: true,
+    targetBufferMinutes: 5,
+    minBufferSeconds: 60,
+  };
 
   const handleAddVideo = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -401,6 +408,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                 className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-900 border-slate-700"
               />
             </label>
+
+            {/* Smart Buffer Sync Toggle */}
+            <div className="p-3 rounded-xl bg-slate-800/50 border border-slate-800 space-y-2">
+              <label className="flex items-center justify-between cursor-pointer">
+                <div>
+                  <span className="text-xs font-medium text-white block">همگام‌سازی بافر قبل از پخش (Buffer Sync)</span>
+                  <span className="text-[10px] text-slate-400">دانلود چند دقیقه جلوتر و توقف هنگام افت بافر کاربران</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={settings.enableBufferSync ?? true}
+                  onChange={(e) => updateRoomSettings({ enableBufferSync: e.target.checked })}
+                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 bg-slate-900 border-slate-700"
+                />
+              </label>
+
+              {(settings.enableBufferSync ?? true) && (
+                <div className="flex items-center justify-between pt-1 border-t border-slate-800 text-[11px] text-slate-300">
+                  <span>میزان دانلود اولیه جلوتر:</span>
+                  <select
+                    value={settings.targetBufferMinutes || 5}
+                    onChange={(e) => updateRoomSettings({ targetBufferMinutes: parseInt(e.target.value, 10) })}
+                    className="px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white"
+                  >
+                    <option value={1}>۱ دقیقه جلوتر</option>
+                    <option value={3}>۳ دقیقه جلوتر</option>
+                    <option value={5}>۵ دقیقه جلوتر (توصیه شده)</option>
+                  </select>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Master sync controls */}

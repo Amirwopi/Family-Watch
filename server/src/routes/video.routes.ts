@@ -49,6 +49,7 @@ router.get('/stream', async (req: Request, res: Response) => {
     res.status(status);
     res.setHeader('Content-Type', contentType);
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
     if (contentLength) res.setHeader('Content-Length', contentLength);
     if (contentRange) res.setHeader('Content-Range', contentRange);
 
@@ -101,6 +102,7 @@ router.get('/transcoded/:filename', (req: Request, res: Response) => {
     res.writeHead(206, {
       'Content-Range': `bytes ${start}-${end}/${fileSize}`,
       'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=86400',
       'Content-Length': chunksize,
       'Content-Type': 'video/mp4',
     });

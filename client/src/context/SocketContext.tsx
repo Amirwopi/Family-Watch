@@ -22,9 +22,19 @@ interface SocketContextType {
   // Playback actions
   sendPlay: (time?: number) => void;
   sendPause: (time?: number) => void;
+  sendForcePlay: (time?: number) => void;
   sendSeek: (time: number) => void;
   sendPlaybackRate: (rate: number) => void;
   sendSourceChange: (source: string) => void;
+  sendBufferStatus: (data: {
+    bufferAhead: number;
+    bufferedEnd: number;
+    currentTime: number;
+    pingMs?: number;
+    downloadSpeedKbps?: number;
+    isBuffering?: boolean;
+  }) => void;
+  measurePing: () => Promise<number>;
   // Queue actions
   setActiveVideo: (queueItemId: string) => void;
   addVideoToQueue: (
@@ -185,9 +195,33 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Actions
   const sendPlay = (time?: number) => socket?.emit('playback:play', time);
   const sendPause = (time?: number) => socket?.emit('playback:pause', time);
+  const sendForcePlay = (time?: number) => socket?.emit('playback:force_play', time);
   const sendSeek = (time: number) => socket?.emit('playback:seek', time);
   const sendPlaybackRate = (rate: number) => socket?.emit('playback:rate', rate);
   const sendSourceChange = (source: string) => socket?.emit('playback:source', source);
+
+  const sendBufferStatus = (data: {
+    bufferAhead: number;
+    bufferedEnd: number;
+    currentTime: number;
+    pingMs?: number;
+    downloadSpeedKbps?: number;
+    isBuffering?: boolean;
+  }) => {
+    socket?.emit('playback:buffer_status', data);
+  };
+
+  const measurePing = (): Promise<number> => {
+    return new Promise((resolve) => {
+      if (!socket || !socket.connected) return resolve(0);
+      const start = performance.now();
+      socket.emit('ping:measure', Date.now(), () => {
+        const ping = Math.round(performance.now() - start);
+        resolve(ping);
+      });
+      setTimeout(() => resolve(0), 3000);
+    });
+  };
 
   const setActiveVideo = (queueItemId: string) => socket?.emit('queue:set_active', queueItemId);
 
@@ -260,9 +294,12 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         attachSubtitleToCurrentVideo,
         sendPlay,
         sendPause,
+        sendForcePlay,
         sendSeek,
         sendPlaybackRate,
         sendSourceChange,
+        sendBufferStatus,
+        measurePing,
         setActiveVideo,
         addVideoToQueue,
         removeQueueItem,

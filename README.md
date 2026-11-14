@@ -48,11 +48,25 @@ A modern, synchronized watch-together platform built with **Node.js, TypeScript,
    - وقتی اعضا در چت پیام ارسال می‌کنند، متن پیام به همراه آواتار و نام کاربر به مدت ۴ ثانیه روی ویدیو به صورت متحرک و ملایم نمایش داده شده و سپس به طور خودکار محو می‌شود.
    - پشتیبانی کامل از متن و فونت‌های فارسی و تراز راست‌به‌چپ.
 
-5. **Videos of Any Duration & Range Seeking**:
+6. **YouTube-Style "Stats for Nerds" & Live Ping (دیباگر و اطلاعات آماری مثل یوتیوب)**:
+   - پنل شیشه‌ای دیباگر یوتیوب با کلیک راست روی ویدیو، آیکون دیباگر در نوار ابزار یا کلید میانبر `Shift + D`.
+   - نمایش سرعت اتصال زنده (`Connection Speed`) به همراه نمودار اسپارک‌لاین متحرک (`Kbps`).
+   - نمایش سلامت و میزان بافر دانلود شده جلوتر (`Buffer Health`) به ثانیه به همراه نمودار رنگی.
+   - نمایش پینگ و تاخیر رفت و برگشت لحظه‌ای به سرور بر حسب میلی‌ثانیه (`Ping / Latency`).
+   - نمایش فریم‌های افتاده (`Dropped Frames`)، ابعاد تصویر و کدک‌های پخش.
+
+7. **Smart Buffer Sync & Deep Pre-Buffering (دانلود چند دقیقه جلوتر و قفل هوشمند بافر)**:
+   - سیستم پیش‌بارگذاری چند دقیقه جلوتر (Pre-buffering) از طریق درخواست‌های زنجیره‌ای Range Requests جهت دانلود بدون وقفه مانند یوتیوب.
+   - لودینگ انیمیشنی پیش از شروع پخش برای دانلود حداقل ۵ دقیقه جلوتر از ویدیو.
+   - توقف خودکار ویدیو برای همه افراد در صورتی که بافر کاربری به کمتر از ۱ دقیقه برسد، همراه با نمایش پیام هشدار روی صفحه با ذکر نام دقیق کاربر و نوار پیشرفت بافر تمام شرکت‌کنندگان.
+   - ادامه پخش خودکار پس از رسیدن بافر همه کاربران به وضعیت امن.
+   - قابلیت پخش فوری (Force Play) و تنظیمات پیشرفته در پنل ادمین.
+
+8. **Videos of Any Duration & Range Seeking**:
    - Built-in **HTTP 206 Partial Content Range streaming proxy** (`/api/video/stream?url=...`).
    - Streams multi-gigabyte or hours-long videos smoothly with instant seeking and without CORS issues.
 
-6. **FFmpeg Video Re-encoding (FPS & Size Adjustment)**:
+9. **FFmpeg Video Re-encoding (FPS & Size Adjustment)**:
    - Target FPS: 24 FPS, 30 FPS, 60 FPS.
    - Target Resolution: 1080p, 720p, 480p, 360p.
    - Live progress updates (percentage, speed, and FPS) broadcast over WebSocket.

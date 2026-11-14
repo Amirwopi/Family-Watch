@@ -75,7 +75,7 @@ export const ParticipantsList: React.FC<ParticipantsListProps> = ({ onClose }) =
                       </span>
                     )}
                   </div>
-                  <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                  <span className="text-[10px] text-slate-400 flex items-center gap-1.5 flex-wrap">
                     {user.status === 'watching' ? (
                       <span className="text-emerald-400 flex items-center gap-1">
                         <CheckCircle2 className="w-2.5 h-2.5" /> Watching
@@ -85,12 +85,27 @@ export const ParticipantsList: React.FC<ParticipantsListProps> = ({ onClose }) =
                         <Clock className="w-2.5 h-2.5" /> Buffering
                       </span>
                     )}
+                    {typeof user.bufferAhead === 'number' && (
+                      <span className="text-slate-400 font-mono text-[9px]">
+                        ({user.bufferAhead}s بافر)
+                      </span>
+                    )}
                   </span>
                 </div>
               </div>
 
               {/* Status & Mic Badge */}
               <div className="flex items-center gap-2 text-slate-400">
+                {user.pingMs ? (
+                  <span
+                    className={`text-[10px] font-mono ${
+                      user.pingMs <= 60 ? 'text-emerald-400' : user.pingMs <= 120 ? 'text-amber-400' : 'text-red-400'
+                    }`}
+                    title="پینگ کاربر به سرور"
+                  >
+                    {user.pingMs}ms
+                  </span>
+                ) : null}
                 {userIsSpeaking ? (
                   <span className="text-emerald-400 animate-pulse" title="Speaking">
                     <Volume2 className="w-3.5 h-3.5" />
