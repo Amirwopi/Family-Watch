@@ -47,7 +47,17 @@ app.get('/api/health', (_req, res) => {
 RoomService.initialize(io);
 // Static client files (for production build)
 const publicDir = path.resolve(__dirname, 'public');
-app.use(express.static(publicDir));
+app.use(express.static(publicDir, {
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.webmanifest')) {
+            res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+        }
+        else if (filePath.endsWith('sw.js')) {
+            res.setHeader('Service-Worker-Allowed', '/');
+            res.setHeader('Cache-Control', 'no-cache');
+        }
+    },
+}));
 // Fallback to index.html for client-side routing
 app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) {

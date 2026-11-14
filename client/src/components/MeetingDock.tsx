@@ -58,7 +58,7 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
       )}
 
       {/* Dock Buttons Container */}
-      <div className="flex items-center gap-2 sm:gap-3 bg-slate-950/70 border border-slate-800 px-3 py-1.5 rounded-2xl shadow-xl backdrop-blur-md relative">
+      <div className="flex items-center gap-1.5 sm:gap-3 bg-slate-950/70 border border-slate-800 px-2 sm:px-3 py-1.5 rounded-2xl shadow-xl backdrop-blur-md relative max-w-full overflow-x-auto">
         {/* Mic Error Toast */}
         {micError && (
           <div
@@ -67,7 +67,7 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
             title="برای مشاهده راهنمای حل مشکل کلیک کنید"
           >
             <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
-            <span className="max-w-[280px] sm:max-w-md truncate">{micError}</span>
+            <span className="max-w-[200px] sm:max-w-md truncate">{micError}</span>
             <span className="text-[10px] text-red-300 underline font-semibold ml-1 shrink-0">راهنما ℹ️</span>
           </div>
         )}
@@ -75,7 +75,7 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
         {/* Real-time WebRTC Voice Mic Toggle */}
         <button
           onClick={toggleMic}
-          className={`p-2.5 rounded-xl transition-all relative ${
+          className={`p-2 sm:p-2.5 rounded-xl transition-all relative ${
             isMicMuted
               ? 'bg-slate-800/80 text-slate-400 hover:text-white'
               : isSpeaking
@@ -91,10 +91,10 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
           }
         >
           {isMicMuted ? (
-            <MicOff className="w-5 h-5" />
+            <MicOff className="w-4 h-4 sm:w-5 sm:h-5" />
           ) : (
             <>
-              <Mic className="w-5 h-5" />
+              <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
               {isSpeaking && (
                 <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-400 rounded-full animate-ping" />
               )}
@@ -105,29 +105,29 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
         {/* Reactions Trigger */}
         <button
           onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-          className={`p-2.5 rounded-xl transition-all ${
+          className={`p-2 sm:p-2.5 rounded-xl transition-all ${
             showEmojiPicker
               ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
               : 'bg-slate-800/80 text-slate-300 hover:text-amber-400'
           }`}
           title="Send Reaction (Popcorn, Heart, etc.)"
         >
-          <Smile className="w-5 h-5" />
+          <Smile className="w-4 h-4 sm:w-5 sm:h-5" />
         </button>
 
-        <div className="w-[1px] h-6 bg-slate-800 mx-1" />
+        <div className="w-[1px] h-6 bg-slate-800 mx-0.5 sm:mx-1" />
 
         {/* Queue Button */}
         <button
           onClick={() => toggleSidebar('queue')}
-          className={`relative p-2.5 rounded-xl transition-all ${
+          className={`relative p-2 sm:p-2.5 rounded-xl transition-all ${
             activeSidebar === 'queue'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
               : 'bg-slate-800/80 text-slate-300 hover:text-white hover:bg-slate-800'
           }`}
           title="Video Queue & Playlist"
         >
-          <ListVideo className="w-5 h-5" />
+          <ListVideo className="w-4 h-4 sm:w-5 sm:h-5" />
           {queueCount > 0 && (
             <span className="absolute -top-1 -right-1 px-1.5 py-0.2 min-w-[18px] text-[10px] font-bold bg-indigo-500 text-white rounded-full border-2 border-slate-900">
               {queueCount}
@@ -138,14 +138,14 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
         {/* Chat Button */}
         <button
           onClick={() => toggleSidebar('chat')}
-          className={`relative p-2.5 rounded-xl transition-all ${
+          className={`relative p-2 sm:p-2.5 rounded-xl transition-all ${
             activeSidebar === 'chat'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
               : 'bg-slate-800/80 text-slate-300 hover:text-white hover:bg-slate-800'
           }`}
           title="Room Chat"
         >
-          <MessageSquare className="w-5 h-5" />
+          <MessageSquare className="w-4 h-4 sm:w-5 sm:h-5" />
           {chatMessages.length > 0 && (
             <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-indigo-500 rounded-full border-2 border-slate-900" />
           )}
@@ -154,14 +154,14 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
         {/* Participants Button */}
         <button
           onClick={() => toggleSidebar('participants')}
-          className={`relative p-2.5 rounded-xl transition-all ${
+          className={`relative p-2 sm:p-2.5 rounded-xl transition-all ${
             activeSidebar === 'participants'
               ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
               : 'bg-slate-800/80 text-slate-300 hover:text-white hover:bg-slate-800'
           }`}
           title="Family Members Watching"
         >
-          <Users className="w-5 h-5" />
+          <Users className="w-4 h-4 sm:w-5 sm:h-5" />
           <span className="absolute -top-1 -right-1 px-1.5 py-0.2 min-w-[18px] text-[10px] font-bold bg-slate-700 text-white rounded-full border-2 border-slate-900">
             {participantCount}
           </span>
@@ -170,17 +170,17 @@ export const MeetingDock: React.FC<MeetingDockProps> = ({ activeSidebar, setActi
         {/* Admin Controls Button */}
         {isAdmin && (
           <>
-            <div className="w-[1px] h-6 bg-slate-800 mx-1" />
+            <div className="w-[1px] h-6 bg-slate-800 mx-0.5 sm:mx-1" />
             <button
               onClick={() => toggleSidebar('admin')}
-              className={`p-2.5 rounded-xl transition-all flex items-center gap-1.5 ${
+              className={`p-2 sm:p-2.5 rounded-xl transition-all flex items-center gap-1.5 ${
                 activeSidebar === 'admin'
                   ? 'bg-amber-500 text-slate-950 font-bold shadow-lg shadow-amber-500/30'
                   : 'bg-amber-500/10 text-amber-400 border border-amber-500/30 hover:bg-amber-500/20'
               }`}
               title="Admin Control Center (Video Links, Subtitles, Re-encode FPS/Size)"
             >
-              <Shield className="w-5 h-5" />
+              <Shield className="w-4 h-4 sm:w-5 sm:h-5" />
               <span className="text-xs font-semibold hidden md:inline">Admin Center</span>
             </button>
           </>

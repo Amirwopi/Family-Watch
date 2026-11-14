@@ -41,21 +41,33 @@ const MainMeetingView: React.FC = () => {
               <ReactionsOverlay />
             </div>
 
-            {/* Sidebars */}
-            {activeSidebar === 'participants' && (
-              <ParticipantsList onClose={() => setActiveSidebar(null)} />
-            )}
-            {activeSidebar === 'chat' && (
-              <ChatPanel onClose={() => setActiveSidebar(null)} />
-            )}
-            {activeSidebar === 'queue' && (
-              <QueuePanel
-                onClose={() => setActiveSidebar(null)}
-                onOpenAdmin={() => setActiveSidebar('admin')}
-              />
-            )}
-            {activeSidebar === 'admin' && (
-              <AdminPanel onClose={() => setActiveSidebar(null)} />
+            {/* Sidebars / Mobile Drawer */}
+            {activeSidebar && (
+              <div className="fixed inset-0 z-40 sm:static sm:z-10 flex flex-row justify-end bg-black/60 sm:bg-transparent backdrop-blur-sm sm:backdrop-blur-none animate-in fade-in duration-150">
+                {/* Tap outside to dismiss on mobile */}
+                <div
+                  className="flex-1 sm:hidden cursor-pointer"
+                  onClick={() => setActiveSidebar(null)}
+                  title="بستن منو"
+                />
+                <div className="w-full max-w-[90vw] sm:max-w-none sm:w-auto h-full flex flex-col shadow-2xl">
+                  {activeSidebar === 'participants' && (
+                    <ParticipantsList onClose={() => setActiveSidebar(null)} />
+                  )}
+                  {activeSidebar === 'chat' && (
+                    <ChatPanel onClose={() => setActiveSidebar(null)} />
+                  )}
+                  {activeSidebar === 'queue' && (
+                    <QueuePanel
+                      onClose={() => setActiveSidebar(null)}
+                      onOpenAdmin={() => setActiveSidebar('admin')}
+                    />
+                  )}
+                  {activeSidebar === 'admin' && (
+                    <AdminPanel onClose={() => setActiveSidebar(null)} />
+                  )}
+                </div>
+              </div>
             )}
           </div>
 

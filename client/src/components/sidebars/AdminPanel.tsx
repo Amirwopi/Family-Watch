@@ -93,7 +93,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="w-96 h-full bg-slate-900 border-l border-slate-800 flex flex-col select-none z-10 animate-in slide-in-from-right duration-200">
+    <div className="w-full sm:w-96 md:w-[440px] h-full bg-slate-900 border-l border-slate-800 flex flex-col select-none z-10 animate-in slide-in-from-right duration-200">
       {/* Header */}
       <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
         <div className="flex items-center gap-2">

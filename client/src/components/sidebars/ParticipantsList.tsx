@@ -14,7 +14,7 @@ export const ParticipantsList: React.FC<ParticipantsListProps> = ({ onClose }) =
   const users = roomState ? Object.values(roomState.users) : [];
 
   return (
-    <div className="w-80 h-full bg-slate-900 border-l border-slate-800 flex flex-col select-none z-10 animate-in slide-in-from-right duration-200">
+    <div className="w-full sm:w-80 md:w-96 h-full bg-slate-900 border-l border-slate-800 flex flex-col select-none z-10 animate-in slide-in-from-right duration-200">
       {/* Sidebar Header */}
       <div className="p-4 border-b border-slate-800 flex items-center justify-between">
         <div className="flex items-center gap-2">

@@ -32,6 +32,7 @@ import { SubtitleSettingsModal } from './SubtitleSettingsModal.js';
 import { FloatingChatOverlay } from './FloatingChatOverlay.js';
 import { StatsForNerdsOverlay } from './StatsForNerdsOverlay.js';
 import { BufferSyncOverlay } from './BufferSyncOverlay.js';
+import { FullscreenChatDrawer } from './FullscreenChatDrawer.js';
 import { VideoPreloader } from '../utils/videoPreloader.js';
 
 export const VideoPlayer: React.FC = () => {
@@ -49,6 +50,7 @@ export const VideoPlayer: React.FC = () => {
     measurePing,
     reconnectCount,
     socket,
+    chatMessages,
   } = useSocket();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -90,6 +92,20 @@ export const VideoPlayer: React.FC = () => {
   // Quality & Chat overlays
   const [showQualityMenu, setShowQualityMenu] = useState<boolean>(false);
   const [showInVideoChat, setShowInVideoChat] = useState<boolean>(true);
+  const [showFullscreenChat, setShowFullscreenChat] = useState<boolean>(false);
+  const [lastReadChatCount, setLastReadChatCount] = useState<number>(0);
+
+  // Mark chat messages as read when drawer is open
+  useEffect(() => {
+    if (showFullscreenChat) {
+      setLastReadChatCount(chatMessages?.length || 0);
+    }
+  }, [showFullscreenChat, chatMessages?.length]);
+
+  const unreadChatCount =
+    !showFullscreenChat && (chatMessages?.length || 0) > lastReadChatCount
+      ? (chatMessages?.length || 0) - lastReadChatCount
+      : 0;
 
   const hideControlsTimer = useRef<NodeJS.Timeout | null>(null);
   const isSeeking = useRef<boolean>(false);
@@ -507,16 +523,37 @@ export const VideoPlayer: React.FC = () => {
     return () => clearInterval(interval);
   }, [streamUrl, pingMs, sendBufferStatus, roomState?.bufferSync?.targetSeconds]);
 
-  // Keyboard shortcut Shift+D for Stats for Nerds
+  // Sync fullscreen state with browser document
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  // Keyboard shortcuts (Shift+D for Stats, C for Fullscreen Chat, Escape to close drawer)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        Boolean(target?.isContentEditable);
+
+      if (isInput) return;
+
       if (e.shiftKey && (e.key === 'D' || e.key === 'd')) {
         setShowStatsForNerds((prev) => !prev);
+      } else if (e.key === 'c' || e.key === 'C') {
+        setShowFullscreenChat((prev) => !prev);
+      } else if (e.key === 'Escape' && showFullscreenChat) {
+        setShowFullscreenChat(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [showFullscreenChat]);
 
   // Custom Context Menu on Video
   const handleContextMenu = (e: React.MouseEvent) => {
@@ -751,6 +788,12 @@ export const VideoPlayer: React.FC = () => {
 
       {/* In-Video Floating Chat Overlay (Nico/Danmaku style comments on video) */}
       <FloatingChatOverlay enabled={showInVideoChat} />
+
+      {/* In-Video / Fullscreen Chat Drawer */}
+      <FullscreenChatDrawer
+        isOpen={showFullscreenChat}
+        onClose={() => setShowFullscreenChat(false)}
+      />
 
       {/* Subtitle Settings Modal */}
       {showSettingsModal && (
@@ -1102,6 +1145,25 @@ export const VideoPlayer: React.FC = () => {
                     }`}
                 >
                   {pingMs}ms
+                </span>
+              )}
+            </button>
+
+            {/* Live Chat in Fullscreen / In-Video Chat Button */}
+            <button
+              onClick={() => setShowFullscreenChat(!showFullscreenChat)}
+              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs relative ${
+                showFullscreenChat
+                  ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
+                  : 'hover:bg-white/10 text-slate-300 hover:text-white'
+              }`}
+              title="چت و گفتگوی زنده در تمام‌صفحه (کلید C)"
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span className="text-[10px] hidden sm:inline">چت</span>
+              {unreadChatCount > 0 && !showFullscreenChat && (
+                <span className="absolute -top-1 -right-1 px-1 min-w-[16px] h-4 text-[9px] font-bold bg-indigo-500 text-white rounded-full flex items-center justify-center border border-black shadow">
+                  {unreadChatCount > 9 ? '9+' : unreadChatCount}
                 </span>
               )}
             </button>
