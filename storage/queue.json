@@ -1,0 +1,21 @@
+[
+  {
+    "id": "c4a5616c-3e69-40c4-a591-9e39928c9d68",
+    "title": "Big Buck Bunny (Demo Video)",
+    "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    "originalUrl": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
+    "subtitles": [
+      {
+        "id": "demo-sub-1",
+        "label": "English Demo",
+        "language": "en",
+        "url": "/api/subtitles/demo.vtt",
+        "isDefault": true
+      }
+    ],
+    "duration": 596,
+    "addedBy": "System",
+    "addedAt": 1794649833278,
+    "transcodedVersions": []
+  }
+]

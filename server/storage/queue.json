@@ -1,0 +1,21 @@
+[
+  {
+    "id": "b23536db-2196-460a-b1a7-9ab16692b92b",
+    "title": "Blooming Flower (Demo Video)",
+    "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+    "originalUrl": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+    "subtitles": [
+      {
+        "id": "demo-sub-1",
+        "label": "English Demo",
+        "language": "en",
+        "url": "/api/subtitles/demo.vtt",
+        "isDefault": true
+      }
+    ],
+    "duration": 5,
+    "addedBy": "System",
+    "addedAt": 1794650926527,
+    "transcodedVersions": []
+  }
+]
