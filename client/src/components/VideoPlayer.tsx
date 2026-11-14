@@ -181,7 +181,7 @@ export const VideoPlayer: React.FC = () => {
 
     // Synchronize play / pause state
     if (playback.isPlaying && video.paused && !video.ended) {
-      video.play().catch(() => {});
+      video.play().catch(() => { });
     } else if (!playback.isPlaying && !video.paused) {
       video.pause();
     }
@@ -191,7 +191,90 @@ export const VideoPlayer: React.FC = () => {
     syncPlayback();
   }, [roomState?.playback, syncPlayback]);
 
-  // Automatic stream recovery watchdog (handles network drops, timeouts, 502s, socket reconnects)
+  const loadedStreamUrlRef = useRef<string>('');
+
+  // 1. Video source loader: ONLY loads when streamUrl genuinely changes to a different video URL
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !streamUrl) return;
+
+    if (loadedStreamUrlRef.current !== streamUrl) {
+      console.log(`[VideoPlayer] Loading new stream URL: ${streamUrl}`);
+      loadedStreamUrlRef.current = streamUrl;
+      video.src = streamUrl;
+      video.load();
+      lastProgressTimeRef.current = Date.now();
+    }
+  }, [streamUrl]);
+
+  // 2. Safe video wake-up / frame download trigger (WITHOUT touching video.muted or calling video.load() unnecessarily)
+  const triggerFrameDownload = useCallback(
+    (reason: string) => {
+      const video = videoRef.current;
+      if (!video || !streamUrl) return;
+
+      console.log(`[VideoPlayer] Checking frame download. Reason: ${reason}`);
+
+      // If the video element has a fatal media error or was detached, reload safely
+      if (video.error || video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE || !video.src) {
+        const savedTime = video.currentTime > 0 ? video.currentTime : roomState?.playback?.currentTime || 0;
+        video.src = streamUrl;
+        video.load();
+        const onMeta = () => {
+          if (!videoRef.current) return;
+          if (savedTime > 0) {
+            videoRef.current.currentTime = savedTime;
+          }
+          if (roomState?.playback?.isPlaying) {
+            videoRef.current.play().catch(() => { });
+          }
+          videoRef.current.removeEventListener('loadedmetadata', onMeta);
+        };
+        video.addEventListener('loadedmetadata', onMeta, { once: true });
+        return;
+      }
+
+      // If room is playing and video is paused, start playback
+      if (roomState?.playback?.isPlaying && video.paused) {
+        video.play().catch(() => { });
+      } else if (video.readyState < 2 && video.paused) {
+        // Safe kick without muting or resetting time
+        video
+          .play()
+          .then(() => {
+            if (!roomState?.playback?.isPlaying && videoRef.current) {
+              videoRef.current.pause();
+            }
+          })
+          .catch(() => { });
+      }
+    },
+    [streamUrl, roomState?.playback?.isPlaying]
+  );
+
+  // 3. Socket reconnect trigger: wake up video if network dropped and reconnected
+  useEffect(() => {
+    if (reconnectCount > 0) {
+      console.log('[VideoPlayer] Network reconnected (count:', reconnectCount, ')');
+      triggerFrameDownload('network_reconnected');
+    }
+  }, [reconnectCount, triggerFrameDownload]);
+
+  // 4. Server force push preload listener
+  useEffect(() => {
+    if (!socket) return;
+    const handleForcePreload = () => {
+      console.log('[VideoPlayer] Received client:force_preload event from server');
+      triggerFrameDownload('server_push_preload');
+    };
+
+    socket.on('client:force_preload', handleForcePreload);
+    return () => {
+      socket.off('client:force_preload', handleForcePreload);
+    };
+  }, [socket, triggerFrameDownload]);
+
+  // Automatic stream recovery watchdog (handles genuine fatal network drops and 502s)
   const recoverVideoPlayback = useCallback(
     (reason: string) => {
       const video = videoRef.current;
@@ -207,8 +290,6 @@ export const VideoPlayer: React.FC = () => {
       const shouldPlay = roomState?.playback?.isPlaying ?? false;
 
       try {
-        video.pause();
-        // Re-assign src to force browser network engine to establish a fresh connection
         video.src = streamUrl;
         video.load();
 
@@ -219,7 +300,7 @@ export const VideoPlayer: React.FC = () => {
               videoRef.current.currentTime = targetTime;
             }
             if (shouldPlay) {
-              videoRef.current.play().catch(() => {});
+              videoRef.current.play().catch(() => { });
             }
           } finally {
             isRecoveringRef.current = false;
@@ -235,7 +316,7 @@ export const VideoPlayer: React.FC = () => {
           if (isRecoveringRef.current) {
             isRecoveringRef.current = false;
             if (videoRef.current && shouldPlay && videoRef.current.paused) {
-              videoRef.current.play().catch(() => {});
+              videoRef.current.play().catch(() => { });
             }
           }
         }, 5000);
@@ -244,82 +325,8 @@ export const VideoPlayer: React.FC = () => {
         isRecoveringRef.current = false;
       }
     },
-    [streamUrl, roomState?.playback]
+    [streamUrl, roomState?.playback?.isPlaying]
   );
-
-  // Forcibly push browser media engine to download video frames
-  const forceVideoFrameDownload = useCallback(
-    (reason: string) => {
-      const video = videoRef.current;
-      if (!video || !streamUrl) return;
-
-      console.log(`[VideoPlayer] Forcing video frame download! Reason: ${reason}`);
-
-      // 1. Ensure source is connected
-      if (!video.src || !video.src.includes(streamUrl)) {
-        video.src = streamUrl;
-      }
-      video.load();
-
-      // 2. Autoplay muted frame kick to activate C++ Blink media decoding pipeline
-      const shouldPlay = roomState?.playback?.isPlaying ?? false;
-      const prevMuted = video.muted;
-      video.muted = true;
-
-      video
-        .play()
-        .then(() => {
-          // If room is paused, pause after 300ms so frames are buffered without playing sound
-          if (!shouldPlay) {
-            setTimeout(() => {
-              if (videoRef.current && !roomState?.playback?.isPlaying) {
-                videoRef.current.pause();
-              }
-              if (videoRef.current) {
-                videoRef.current.muted = prevMuted;
-              }
-            }, 300);
-          } else {
-            video.muted = prevMuted;
-          }
-        })
-        .catch((err) => {
-          console.warn('[VideoPlayer] Autoplay frame kick caught:', err.message);
-          video.muted = prevMuted;
-        });
-    },
-    [streamUrl, roomState?.playback]
-  );
-
-  // Auto reload when streamUrl changes
-  useEffect(() => {
-    if (videoRef.current && streamUrl) {
-      forceVideoFrameDownload('stream_url_changed');
-      lastProgressTimeRef.current = Date.now();
-    }
-  }, [streamUrl, forceVideoFrameDownload]);
-
-  // Socket reconnect trigger: forcibly push frame download upon reconnecting after network drop
-  useEffect(() => {
-    if (reconnectCount > 0) {
-      console.log('[VideoPlayer] Network reconnected (count:', reconnectCount, ') - forcing video frame download!');
-      forceVideoFrameDownload('network_reconnected');
-    }
-  }, [reconnectCount, forceVideoFrameDownload]);
-
-  // Server force push preload listener
-  useEffect(() => {
-    if (!socket) return;
-    const handleForcePreload = () => {
-      console.log('[VideoPlayer] Received client:force_preload event from server');
-      forceVideoFrameDownload('server_push_preload');
-    };
-
-    socket.on('client:force_preload', handleForcePreload);
-    return () => {
-      socket.off('client:force_preload', handleForcePreload);
-    };
-  }, [socket, forceVideoFrameDownload]);
 
   // Video event listeners
   useEffect(() => {
@@ -446,6 +453,15 @@ export const VideoPlayer: React.FC = () => {
           if (cur >= start - 1 && cur <= end) {
             ahead = Math.max(0, end - cur);
             break;
+          } else if (cur < start && end > cur) {
+            ahead = Math.max(ahead, end - cur);
+          }
+        }
+        // Fallback: if ahead is 0 but we have buffer in the video ahead of cur
+        if (ahead === 0 && video.buffered.length > 0) {
+          const lastEnd = video.buffered.end(video.buffered.length - 1);
+          if (lastEnd > cur) {
+            ahead = Math.max(0, lastEnd - cur);
           }
         }
       }
@@ -562,10 +578,10 @@ export const VideoPlayer: React.FC = () => {
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(() => {});
+      containerRef.current.requestFullscreen().catch(() => { });
       setIsFullscreen(true);
     } else {
-      document.exitFullscreen().catch(() => {});
+      document.exitFullscreen().catch(() => { });
       setIsFullscreen(false);
     }
   };
@@ -674,17 +690,7 @@ export const VideoPlayer: React.FC = () => {
       <BufferSyncOverlay
         onForcePlay={() => sendForcePlay(currentTime)}
         onInteractiveLoad={() => {
-          if (videoRef.current) {
-            videoRef.current.load();
-            videoRef.current
-              .play()
-              .then(() => {
-                if (!roomState?.playback?.isPlaying) {
-                  videoRef.current?.pause();
-                }
-              })
-              .catch(() => {});
-          }
+          triggerFrameDownload('user_button_click');
         }}
       />
 
@@ -757,9 +763,8 @@ export const VideoPlayer: React.FC = () => {
 
       {/* Title & Sync Drift Overlay at Top-Left */}
       <div
-        className={`absolute top-4 left-4 transition-opacity duration-300 pointer-events-none flex items-center gap-2 ${
-          controlsVisible ? 'opacity-100' : 'opacity-0'
-        }`}
+        className={`absolute top-4 left-4 transition-opacity duration-300 pointer-events-none flex items-center gap-2 ${controlsVisible ? 'opacity-100' : 'opacity-0'
+          }`}
       >
         <div className="px-3 py-1.5 rounded-lg bg-black/60 backdrop-blur-md border border-white/10 text-xs text-white flex items-center gap-2 shadow-lg">
           <span className="font-medium text-slate-200 max-w-xs truncate">{activeVideo.title}</span>
@@ -792,9 +797,8 @@ export const VideoPlayer: React.FC = () => {
 
       {/* Custom Bottom Video Controls Bar */}
       <div
-        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-12 pb-4 px-6 transition-opacity duration-300 ${
-          controlsVisible ? 'opacity-100' : 'opacity-0'
-        }`}
+        className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-12 pb-4 px-6 transition-opacity duration-300 ${controlsVisible ? 'opacity-100' : 'opacity-0'
+          }`}
       >
         {/* Progress Timeline Slider */}
         <div className="relative mb-3 flex items-center group/timeline">
@@ -826,9 +830,8 @@ export const VideoPlayer: React.FC = () => {
             <button
               onClick={togglePlay}
               disabled={!canControl}
-              className={`p-2 rounded-full hover:bg-white/10 transition-colors ${
-                !canControl ? 'opacity-50 cursor-not-allowed' : ''
-              }`}
+              className={`p-2 rounded-full hover:bg-white/10 transition-colors ${!canControl ? 'opacity-50 cursor-not-allowed' : ''
+                }`}
               title={isPlaying ? 'Pause' : 'Play'}
             >
               {isPlaying ? <Pause className="w-5 h-5 fill-white" /> : <Play className="w-5 h-5 fill-white ml-0.5" />}
@@ -863,9 +866,8 @@ export const VideoPlayer: React.FC = () => {
             {/* In-Video Floating Chat Toggle */}
             <button
               onClick={() => setShowInVideoChat(!showInVideoChat)}
-              className={`p-1.5 rounded-lg hover:bg-white/10 transition-colors flex items-center gap-1 text-xs ${
-                showInVideoChat ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-400'
-              }`}
+              className={`p-1.5 rounded-lg hover:bg-white/10 transition-colors flex items-center gap-1 text-xs ${showInVideoChat ? 'text-indigo-400' : 'text-slate-500 hover:text-slate-400'
+                }`}
               title={`In-Video Chat Comments: ${showInVideoChat ? 'ON' : 'OFF'}`}
             >
               <MessageSquare className="w-4 h-4" />
@@ -881,9 +883,8 @@ export const VideoPlayer: React.FC = () => {
                   setShowSubtitleMenu(!showSubtitleMenu);
                   setShowQualityMenu(false);
                 }}
-                className={`p-1.5 rounded-lg hover:bg-white/10 transition-colors flex items-center gap-1 text-xs ${
-                  selectedSubtitleId !== 'off' ? 'text-indigo-400 font-medium' : 'text-slate-300'
-                }`}
+                className={`p-1.5 rounded-lg hover:bg-white/10 transition-colors flex items-center gap-1 text-xs ${selectedSubtitleId !== 'off' ? 'text-indigo-400 font-medium' : 'text-slate-300'
+                  }`}
                 title="Subtitles & Styling"
               >
                 <Subtitles className="w-4 h-4" />
@@ -913,9 +914,8 @@ export const VideoPlayer: React.FC = () => {
                       setSelectedSubtitleId('off');
                       setShowSubtitleMenu(false);
                     }}
-                    className={`w-full text-left px-3.5 py-2 hover:bg-indigo-600/20 transition-colors ${
-                      selectedSubtitleId === 'off' ? 'text-indigo-400 font-semibold' : 'text-slate-300'
-                    }`}
+                    className={`w-full text-left px-3.5 py-2 hover:bg-indigo-600/20 transition-colors ${selectedSubtitleId === 'off' ? 'text-indigo-400 font-semibold' : 'text-slate-300'
+                      }`}
                   >
                     Off
                   </button>
@@ -929,9 +929,8 @@ export const VideoPlayer: React.FC = () => {
                           setSelectedSubtitleId(sub.label);
                           setShowSubtitleMenu(false);
                         }}
-                        className={`w-full text-left px-3.5 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${
-                          selectedSubtitleId === sub.label ? 'text-indigo-400 font-semibold' : 'text-slate-300'
-                        }`}
+                        className={`w-full text-left px-3.5 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${selectedSubtitleId === sub.label ? 'text-indigo-400 font-semibold' : 'text-slate-300'
+                          }`}
                       >
                         <div className="flex items-center gap-1.5 truncate">
                           <span className="truncate">{sub.label}</span>
@@ -1046,11 +1045,10 @@ export const VideoPlayer: React.FC = () => {
                       if (isAdmin) sendSourceChange('original');
                       setShowQualityMenu(false);
                     }}
-                    className={`w-full text-left px-3 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${
-                      roomState?.activeStreamSource === 'original'
+                    className={`w-full text-left px-3 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${roomState?.activeStreamSource === 'original'
                         ? 'text-indigo-400 font-semibold'
                         : 'text-slate-300'
-                    }`}
+                      }`}
                   >
                     <span>Original Source</span>
                     <span className="text-[10px] text-slate-400">Direct Link</span>
@@ -1064,11 +1062,10 @@ export const VideoPlayer: React.FC = () => {
                         if (isAdmin) sendSourceChange(v.id);
                         setShowQualityMenu(false);
                       }}
-                      className={`w-full text-left px-3 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${
-                        roomState?.activeStreamSource === v.id
+                      className={`w-full text-left px-3 py-2 hover:bg-indigo-600/20 transition-colors flex items-center justify-between ${roomState?.activeStreamSource === v.id
                           ? 'text-indigo-400 font-semibold'
                           : 'text-slate-300'
-                      }`}
+                        }`}
                     >
                       <span className="flex items-center gap-1.5">
                         <Sparkles className="w-3 h-3 text-amber-400" />
@@ -1092,19 +1089,17 @@ export const VideoPlayer: React.FC = () => {
             {/* Stats for Nerds Toggle Button */}
             <button
               onClick={() => setShowStatsForNerds(!showStatsForNerds)}
-              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs ${
-                showStatsForNerds
+              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1.5 text-xs ${showStatsForNerds
                   ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
                   : 'hover:bg-white/10 text-slate-300 hover:text-white'
-              }`}
+                }`}
               title="Stats for nerds (اطلاعات فنی و پینگ مثل یوتیوب - Shift+D)"
             >
               <Activity className="w-4 h-4" />
               {pingMs > 0 && (
                 <span
-                  className={`text-[10px] font-mono hidden sm:inline ${
-                    pingMs <= 50 ? 'text-emerald-400' : pingMs <= 120 ? 'text-amber-400' : 'text-red-400'
-                  }`}
+                  className={`text-[10px] font-mono hidden sm:inline ${pingMs <= 50 ? 'text-emerald-400' : pingMs <= 120 ? 'text-amber-400' : 'text-red-400'
+                    }`}
                 >
                   {pingMs}ms
                 </span>
