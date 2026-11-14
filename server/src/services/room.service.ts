@@ -4,6 +4,7 @@ import { CONFIG } from '../config.js';
 import { QueueService } from './queue.service.js';
 import { TranscoderService } from './transcoder.service.js';
 import { SubtitleService } from './subtitle.service.js';
+import { VideoCacheService } from './videoCache.service.js';
 import {
   User,
   PlaybackState,
@@ -34,12 +35,15 @@ export class RoomService {
     updatedAt: Date.now(),
   };
 
+  private static forcePlayCooldownUntil: number = 0;
+  private static playbackGraceUntil: number = 0;
+
   private static settings: RoomSettings = {
     allowMemberControls: false, // Only admin can control unless enabled
     autoPlayNext: true,
     enableBufferSync: true, // Smart buffer sync enabled by default
     targetBufferMinutes: 5, // 5 minutes ahead initial target
-    minBufferSeconds: 60, // 1 minute minimum while playing
+    minBufferSeconds: 20, // 20 seconds minimum during playback (safe threshold for browser engines)
   };
 
   private static bufferSync: BufferSyncState = {
@@ -58,6 +62,11 @@ export class RoomService {
     const queue = QueueService.getQueue();
     if (queue.length > 0) {
       this.currentQueueItemId = queue[0].id;
+      // Start server download for first video if remote
+      const targetSec = Math.min((this.settings.targetBufferMinutes || 3) * 60, queue[0].duration || 300);
+      VideoCacheService.startDownload(queue[0], this.io, targetSec, () => {
+        this.evaluateBufferSync();
+      });
     }
 
     this.setupSocketHandlers();
@@ -132,6 +141,12 @@ export class RoomService {
       return;
     }
 
+    const now = Date.now();
+    // Cooldown check: if force play or recent playback start is active, do not pause
+    if (now < this.forcePlayCooldownUntil || now < this.playbackGraceUntil) {
+      return;
+    }
+
     const activeItem = QueueService.getItem(this.currentQueueItemId);
     const duration = activeItem?.duration || 0;
     const currentTime = this.getCurrentCalculatedTime();
@@ -143,9 +158,9 @@ export class RoomService {
     if (watchingUsers.length === 0) return;
 
     const targetSec = Math.min(this.settings.targetBufferMinutes * 60, remainingTime > 0 ? remainingTime : 300);
-    const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 60);
+    const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 20);
 
-    // 1. If currently playing: check if anyone is below minSec (e.g. 60s)
+    // 1. If currently playing: check if anyone is critically below minSec (e.g. 20s)
     if (this.playback.isPlaying) {
       if (remainingTime > 15) {
         const starvingUser = watchingUsers.find(
@@ -174,33 +189,43 @@ export class RoomService {
           this.broadcastPlaybackSync();
           this.broadcastRoomState();
           this.addSystemMessage(
-            `⚠️ پخش متوقف شد: سرعت دانلود «${starvingUser.username}» کمتر از ۱ دقیقه بافر دارد (${Math.round(starvingUser.bufferAhead ?? 0)} ثانیه). در حال بارگذاری هماهنگ...`
+            `⚠️ پخش متوقف شد: سرعت دانلود «${starvingUser.username}» افت کرد (${Math.round(starvingUser.bufferAhead ?? 0)} ثانیه بافر). در حال بارگذاری مجدد...`
           );
         }
       }
     } else if (this.bufferSync.isSyncBuffering) {
-      // 2. Room is waiting for everyone to buffer:
-      const requiredThreshold = this.bufferSync.reason === 'initial' ? Math.min(targetSec, 180) : minSec;
-      const stillStarving = watchingUsers.find(
-        (u) => (u.bufferAhead ?? 0) < requiredThreshold || u.isBuffering
+      // 2. Room is waiting for buffer to become ready:
+      // In browsers (Chrome/Firefox), paused video stops buffering around 30-45s.
+      // A user is ready if bufferAhead >= 15s OR isReadyForPlayback.
+      const readyThreshold = Math.min(15, remainingTime > 0 ? remainingTime : 15);
+      const unreadyUser = watchingUsers.find(
+        (u) => !u.isReadyForPlayback && (u.bufferAhead ?? 0) < readyThreshold && u.status !== 'idle'
       );
 
-      if (!stillStarving) {
-        // Everyone reached buffer! Resume playback!
+      // Server buffer check: Is server buffer ready for target minutes?
+      const isServerReady =
+        !activeItem?.url.startsWith('http') ||
+        activeItem?.cacheStatus === 'ready' ||
+        activeItem?.cacheStatus === 'completed' ||
+        (activeItem?.cacheBufferedSeconds ?? 0) >= targetSec;
+
+      if (!unreadyUser && isServerReady) {
+        // Everyone reached ready buffer & server buffer ready! Resume playback!
         this.bufferSync.isSyncBuffering = false;
         this.bufferSync.starvingUser = undefined;
         this.playback.isPlaying = true;
         this.playback.updatedAt = Date.now();
+        this.playbackGraceUntil = Date.now() + 30000; // 30s grace period
 
         this.broadcastPlaybackSync();
         this.broadcastRoomState();
-        this.addSystemMessage(`✅ بافر تمام کاربران تکمیل شد! ادامه پخش ویدیو به صورت کاملاً هماهنگ.`);
+        this.addSystemMessage(`✅ بافر سرور و تمام کاربران آماده شد! شروع پخش هماهنگ ویدیو.`);
       } else {
         this.bufferSync.starvingUser = {
-          socketId: stillStarving.socketId,
-          username: stillStarving.username,
-          bufferAhead: stillStarving.bufferAhead ?? 0,
-          required: requiredThreshold,
+          socketId: unreadyUser?.socketId || 'server',
+          username: unreadyUser?.username || 'بافر سرور',
+          bufferAhead: unreadyUser ? (unreadyUser.bufferAhead ?? 0) : (activeItem?.cacheBufferedSeconds ?? 0),
+          required: unreadyUser ? readyThreshold : targetSec,
         };
         this.broadcastRoomState();
       }
@@ -258,6 +283,14 @@ export class RoomService {
         socket.emit('room:state', this.getRoomState());
         socket.emit('chat:history', this.chatHistory);
 
+        // Forcibly push client to download video frames upon connecting/reconnecting
+        if (this.currentQueueItemId) {
+          socket.emit('client:force_preload', {
+            queueItemId: this.currentQueueItemId,
+            currentTime: this.getCurrentCalculatedTime(),
+          });
+        }
+
         // Broadcast to other members
         socket.broadcast.emit('user:joined', user);
         this.addSystemMessage(`${user.username} joined the meeting${user.isAdmin ? ' (as Admin)' : ''}.`);
@@ -285,18 +318,19 @@ export class RoomService {
 
         const seekTime = typeof time === 'number' ? time : this.getCurrentCalculatedTime();
         this.playback.currentTime = Math.max(0, seekTime);
+        RoomService.playbackGraceUntil = Date.now() + 30000; // 30s grace period when starting
 
         // Check if BufferSync is enabled: if anyone is low on buffer, trigger buffer sync
-        if (this.settings.enableBufferSync && this.currentQueueItemId) {
+        if (this.settings.enableBufferSync && this.currentQueueItemId && Date.now() >= RoomService.forcePlayCooldownUntil) {
           const activeItem = QueueService.getItem(this.currentQueueItemId);
           const duration = activeItem?.duration || 0;
           const remainingTime = duration > 0 ? Math.max(0, duration - this.playback.currentTime) : 999999;
-          const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 60);
+          const minSec = Math.min(this.settings.minBufferSeconds, remainingTime > 0 ? remainingTime : 20);
 
           const watchingUsers = Array.from(this.users.values()).filter(
             (u) => u.status === 'watching' || u.status === 'buffering'
           );
-          const starving = watchingUsers.find((u) => typeof u.bufferAhead === 'number' && (u.bufferAhead < minSec || u.isBuffering));
+          const starving = watchingUsers.find((u) => !u.isReadyForPlayback && typeof u.bufferAhead === 'number' && (u.bufferAhead < minSec || u.isBuffering));
 
           if (starving && remainingTime > 15) {
             this.playback.isPlaying = false;
@@ -334,6 +368,8 @@ export class RoomService {
         const user = this.users.get(socket.id);
         if (!user || (!user.isAdmin && !this.settings.allowMemberControls)) return;
 
+        RoomService.forcePlayCooldownUntil = Date.now() + 60000; // 60s immunity from pause
+        RoomService.playbackGraceUntil = Date.now() + 30000;
         this.bufferSync.isSyncBuffering = false;
         this.bufferSync.starvingUser = undefined;
         const seekTime = typeof time === 'number' ? time : this.getCurrentCalculatedTime();
@@ -408,12 +444,24 @@ export class RoomService {
         this.playback.currentTime = 0;
         this.playback.updatedAt = Date.now();
 
+        const targetSec = Math.min((this.settings.targetBufferMinutes || 3) * 60, item.duration || 300);
+
+        // Start server download & buffer engine immediately!
+        VideoCacheService.startDownload(item, this.io, targetSec, () => {
+          this.evaluateBufferSync();
+        });
+
+        // Push all users to immediately preload and buffer video frames
+        this.io.emit('client:force_preload', {
+          queueItemId,
+          currentTime: 0,
+        });
+
         if (this.settings.enableBufferSync) {
-          const targetSec = Math.min(this.settings.targetBufferMinutes * 60, item.duration || 300);
           this.bufferSync = {
             isSyncBuffering: true,
             targetSeconds: targetSec,
-            minSeconds: Math.min(this.settings.minBufferSeconds, item.duration || 60),
+            minSeconds: Math.min(this.settings.minBufferSeconds, item.duration || 20),
             reason: 'initial',
           };
           this.playback.isPlaying = false;
@@ -455,17 +503,22 @@ export class RoomService {
 
           const newItem = await QueueService.addItem(data.title, data.url, user.username, subtitles);
 
+          // Start server download & local caching immediately
+          const targetSec = Math.min((this.settings.targetBufferMinutes || 3) * 60, newItem.duration || 300);
+          VideoCacheService.startDownload(newItem, this.io, targetSec, () => {
+            this.evaluateBufferSync();
+          });
+
           // If no video is currently active, make this the active video
           if (!this.currentQueueItemId) {
             this.currentQueueItemId = newItem.id;
             this.playback.currentTime = 0;
             this.playback.updatedAt = Date.now();
             if (this.settings.enableBufferSync) {
-              const targetSec = Math.min(this.settings.targetBufferMinutes * 60, newItem.duration || 300);
               this.bufferSync = {
                 isSyncBuffering: true,
                 targetSeconds: targetSec,
-                minSeconds: Math.min(this.settings.minBufferSeconds, newItem.duration || 60),
+                minSeconds: Math.min(this.settings.minBufferSeconds, newItem.duration || 20),
                 reason: 'initial',
               };
               this.playback.isPlaying = false;
@@ -621,6 +674,7 @@ export class RoomService {
         pingMs?: number;
         downloadSpeedKbps?: number;
         isBuffering?: boolean;
+        isReadyForPlayback?: boolean;
       }) => {
         const user = this.users.get(socket.id);
         if (!user) return;
@@ -631,6 +685,9 @@ export class RoomService {
         if (typeof data.pingMs === 'number') user.pingMs = data.pingMs;
         if (typeof data.downloadSpeedKbps === 'number') user.downloadSpeedKbps = data.downloadSpeedKbps;
         user.isBuffering = data.isBuffering ?? false;
+        if (typeof data.isReadyForPlayback === 'boolean') {
+          user.isReadyForPlayback = data.isReadyForPlayback;
+        }
         user.status = data.isBuffering ? 'buffering' : 'watching';
 
         this.evaluateBufferSync();

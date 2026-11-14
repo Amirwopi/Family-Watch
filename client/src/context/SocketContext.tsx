@@ -13,6 +13,7 @@ import {
 interface SocketContextType {
   socket: Socket | null;
   connected: boolean;
+  reconnectCount: number;
   roomState: RoomState | null;
   currentUser: User | null;
   chatMessages: ChatMessage[];
@@ -33,6 +34,7 @@ interface SocketContextType {
     pingMs?: number;
     downloadSpeedKbps?: number;
     isBuffering?: boolean;
+    isReadyForPlayback?: boolean;
   }) => void;
   measurePing: () => Promise<number>;
   // Queue actions
@@ -64,6 +66,8 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const { username, secretKey, isAuthenticated, elevate } = useAuth();
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
+  const [reconnectCount, setReconnectCount] = useState<number>(0);
+  const isFirstConnect = useRef<boolean>(true);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [reactions, setReactions] = useState<ReactionPayload[]>([]);
@@ -95,6 +99,10 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     newSocket.on('connect', () => {
       setConnected(true);
+      if (!isFirstConnect.current) {
+        setReconnectCount((c) => c + 1);
+      }
+      isFirstConnect.current = false;
       // Join room with username and optional secret key
       newSocket.emit('user:join', { username, secretKey });
     });
@@ -177,6 +185,37 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       });
     });
 
+    // Server-side video cache download progress
+    newSocket.on('cache:progress', (data: {
+      queueItemId: string;
+      percent: number;
+      downloadedBytes: number;
+      totalBytes: number;
+      speedKbps: number;
+      bufferedSeconds: number;
+      status: 'downloading' | 'ready' | 'completed' | 'error';
+    }) => {
+      setRoomState((prev) => {
+        if (!prev) return null;
+        const updatedQueue = prev.queue.map((item) => {
+          if (item.id === data.queueItemId) {
+            return {
+              ...item,
+              cacheStatus: data.status,
+              cacheProgress: data.percent,
+              cacheDownloadedBytes: data.downloadedBytes,
+              cacheTotalBytes: data.totalBytes,
+              cacheSpeedKbps: data.speedKbps,
+              cacheBufferedSeconds: data.bufferedSeconds,
+              cachedUrl: `/api/video/cached/${item.id}`,
+            };
+          }
+          return item;
+        });
+        return { ...prev, queue: updatedQueue };
+      });
+    });
+
     return () => {
       newSocket.disconnect();
       socketRef.current = null;
@@ -207,6 +246,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     pingMs?: number;
     downloadSpeedKbps?: number;
     isBuffering?: boolean;
+    isReadyForPlayback?: boolean;
   }) => {
     socket?.emit('playback:buffer_status', data);
   };
@@ -285,6 +325,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       value={{
         socket,
         connected,
+        reconnectCount,
         roomState,
         currentUser,
         chatMessages,

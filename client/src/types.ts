@@ -14,6 +14,7 @@ export interface User {
   isBuffering?: boolean;
   pingMs?: number;
   downloadSpeedKbps?: number;
+  isReadyForPlayback?: boolean;
 }
 
 export interface SubtitleTrack {
@@ -77,6 +78,15 @@ export interface QueueItem {
   isTranscoding?: boolean;
   transcodeProgress?: number;
   transcodeStatusText?: string;
+  // Server-side cache properties
+  localCachedPath?: string;
+  cachedUrl?: string;
+  cacheStatus?: 'idle' | 'downloading' | 'ready' | 'completed' | 'error';
+  cacheProgress?: number; // 0 - 100%
+  cacheDownloadedBytes?: number;
+  cacheTotalBytes?: number;
+  cacheSpeedKbps?: number;
+  cacheBufferedSeconds?: number;
 }
 
 export interface PlaybackState {

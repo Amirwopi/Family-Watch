@@ -14,11 +14,12 @@ export const CONFIG = {
   STORAGE_DIR: path.resolve(__dirname, '../storage'),
   TRANSCODED_DIR: path.resolve(__dirname, '../storage/transcoded'),
   SUBTITLES_DIR: path.resolve(__dirname, '../storage/subtitles'),
+  CACHE_DIR: path.resolve(__dirname, '../storage/cache'),
   QUEUE_FILE: path.resolve(__dirname, '../storage/queue.json'),
 };
 
 // Ensure storage directories exist
-[CONFIG.STORAGE_DIR, CONFIG.TRANSCODED_DIR, CONFIG.SUBTITLES_DIR].forEach((dir) => {
+[CONFIG.STORAGE_DIR, CONFIG.TRANSCODED_DIR, CONFIG.SUBTITLES_DIR, CONFIG.CACHE_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }

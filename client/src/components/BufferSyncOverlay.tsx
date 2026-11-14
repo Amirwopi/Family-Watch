@@ -5,10 +5,11 @@ import { useAuth } from '../context/AuthContext.js';
 
 interface BufferSyncOverlayProps {
   onForcePlay?: () => void;
+  onInteractiveLoad?: () => void;
 }
 
-export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePlay }) => {
-  const { roomState, sendForcePlay, updateRoomSettings } = useSocket();
+export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePlay, onInteractiveLoad }) => {
+  const { roomState, activeVideo, currentUser, sendForcePlay, updateRoomSettings } = useSocket();
   const { isAdmin } = useAuth();
 
   const bufferSync = roomState?.bufferSync;
@@ -64,31 +65,88 @@ export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePla
           <p className="text-xs text-slate-300 leading-relaxed max-w-md mx-auto">
             {bufferSync.reason === 'low_buffer' && starvingUser ? (
               <span>
-                پخش ویدیو به طور خودکار متوقف شد زیرا اینترنت کاربر{' '}
+                پخش ویدیو موقتاً متوقف شد زیرا دانلود کاربر{' '}
                 <b className="text-amber-400 underline font-semibold">{starvingUser.username}</b> افت
-                کرده و بافر او کمتر از ۱ دقیقه است ({Math.round(starvingUser.bufferAhead)} ثانیه).
+                کرده است ({Math.round(starvingUser.bufferAhead)} ثانیه بافر). در حال بازیابی و بافر هماهنگ...
               </span>
             ) : (
               <span>
-                در حال دانلود حداقل ۵ دقیقه جلوتر از ویدیو برای تمام کاربران جهت تماشای کاملاً پیوسته
-                و بدون لگ...
+                در حال بارگذاری هماهنگ ویدیو برای تمام اعضا جهت پخش پیوسته و بدون قطعی...
               </span>
             )}
           </p>
         </div>
 
+        {/* Interactive unlock button if current user buffer is 0 (browser autoplay block) */}
+        {currentUser && (currentUser.bufferAhead ?? 0) < 5 && onInteractiveLoad && (
+          <button
+            onClick={onInteractiveLoad}
+            className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/30 animate-pulse transition-all cursor-pointer"
+          >
+            <Play className="w-4 h-4 fill-current" />
+            <span>برای فعال‌سازی و دریافت فریم‌های ویدیو کلیک کنید</span>
+          </button>
+        )}
+
+        {/* Server Cache Progress Section */}
+        {activeVideo && activeVideo.url && activeVideo.url.startsWith('http') && (
+          <div className="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-3 text-right space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5 font-bold text-indigo-300">
+                <DownloadCloud className="w-4 h-4 text-indigo-400 animate-pulse" />
+                <span>وضعیت کش و بافر سرور:</span>
+                <span className="text-white">
+                  {activeVideo.cacheStatus === 'completed'
+                    ? 'دانلود کامل شد (۱۰۰٪)'
+                    : activeVideo.cacheStatus === 'ready'
+                    ? 'آماده پخش (بافر هدف سرور تامین شد)'
+                    : `${activeVideo.cacheProgress || 0}%`}
+                </span>
+              </div>
+              <div className="text-[11px] font-mono text-indigo-200">
+                {activeVideo.cacheDownloadedBytes
+                  ? `${(activeVideo.cacheDownloadedBytes / 1024 / 1024).toFixed(1)} MB`
+                  : ''}
+                {activeVideo.cacheTotalBytes
+                  ? ` / ${(activeVideo.cacheTotalBytes / 1024 / 1024).toFixed(1)} MB`
+                  : ''}
+              </div>
+            </div>
+
+            {/* Server download progress bar */}
+            <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                style={{ width: `${activeVideo.cacheProgress || 0}%` }}
+                className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all duration-300 shadow-sm shadow-indigo-500/50"
+              />
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-slate-300">
+              <span>
+                بافر سرور: <b className="text-indigo-400 font-bold">{Math.round(((activeVideo.cacheBufferedSeconds || 0) / 60) * 10) / 10} دقیقه</b>
+                {' '}(هدف: {Math.round(targetSec / 60)} دقیقه)
+              </span>
+              {activeVideo.cacheSpeedKbps ? (
+                <span className="font-mono text-slate-400">
+                  سرعت سرور: {(activeVideo.cacheSpeedKbps / 8 / 1024).toFixed(2)} MB/s
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
+
         {/* Participants Buffer Progress List */}
         <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2.5 max-h-48 overflow-y-auto text-right">
           <div className="text-[11px] text-slate-400 font-semibold flex items-center justify-between pb-1 border-b border-slate-800/80">
-            <span>وضعیت دانلود کاربران (هدف: حداقل {Math.round(targetSec / 60)} دقیقه)</span>
-            <span>بافر جلوتر</span>
+            <span>وضعیت دانلود کاربران</span>
+            <span>بافر ذخیره شده</span>
           </div>
 
           {users.map((u) => {
             const bufferVal = Math.round(u.bufferAhead || 0);
-            const percent = Math.min(100, Math.round((bufferVal / targetSec) * 100));
             const isStarving = bufferSync.reason === 'low_buffer' && starvingUser?.socketId === u.socketId;
-            const isReady = bufferVal >= (bufferSync.reason === 'low_buffer' ? minSec : 120);
+            const isReady = u.isReadyForPlayback || bufferVal >= 15;
+            const percent = Math.min(100, Math.round((bufferVal / (bufferSync.reason === 'low_buffer' ? minSec : 15)) * 100));
 
             return (
               <div key={u.id} className="space-y-1">
@@ -103,7 +161,7 @@ export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePla
                     <span className="font-medium text-slate-200 truncate">{u.username}</span>
                     {isStarving && (
                       <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-300 text-[10px] animate-pulse">
-                        بافر کم ⏳
+                        افت دانلود ⏳
                       </span>
                     )}
                     {isReady && (
@@ -128,10 +186,10 @@ export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePla
                     ) : null}
                     <span
                       className={`font-bold ${
-                        bufferVal >= minSec ? 'text-emerald-400' : 'text-amber-400'
+                        isReady ? 'text-emerald-400' : 'text-amber-400'
                       }`}
                     >
-                      {bufferVal}s / {targetSec}s
+                      {bufferVal}s
                     </span>
                   </div>
                 </div>
@@ -181,3 +239,4 @@ export const BufferSyncOverlay: React.FC<BufferSyncOverlayProps> = ({ onForcePla
     </div>
   );
 };
+

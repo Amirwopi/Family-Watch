@@ -47,6 +47,8 @@ export const VideoPlayer: React.FC = () => {
     attachSubtitleToCurrentVideo,
     sendBufferStatus,
     measurePing,
+    reconnectCount,
+    socket,
   } = useSocket();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -62,6 +64,12 @@ export const VideoPlayer: React.FC = () => {
   const [controlsVisible, setControlsVisible] = useState<boolean>(true);
   const [drift, setDrift] = useState<number>(0);
   const [bufferedEnd, setBufferedEnd] = useState<number>(0);
+
+  // Recovery & watchdog refs
+  const isRecoveringRef = useRef<boolean>(false);
+  const lastProgressTimeRef = useRef<number>(Date.now());
+  const bufferStallCountRef = useRef<number>(0);
+  const lastBufferAheadRef = useRef<number>(0);
 
   // YouTube Stats for nerds & Ping debugger
   const [showStatsForNerds, setShowStatsForNerds] = useState<boolean>(false);
@@ -99,10 +107,12 @@ export const VideoPlayer: React.FC = () => {
         streamUrl = transcoded.url;
       }
     }
-    // Fallback to original or proxy stream
+    // Fallback to server cache or proxy stream
     if (!streamUrl) {
-      if (activeVideo.url.startsWith('http://') || activeVideo.url.startsWith('https://')) {
-        streamUrl = `/api/video/stream?url=${encodeURIComponent(activeVideo.url)}`;
+      if (activeVideo.cachedUrl) {
+        streamUrl = activeVideo.cachedUrl;
+      } else if (activeVideo.url.startsWith('http://') || activeVideo.url.startsWith('https://')) {
+        streamUrl = `/api/video/cached/${activeVideo.id}`;
       } else {
         streamUrl = activeVideo.url;
       }
@@ -181,6 +191,136 @@ export const VideoPlayer: React.FC = () => {
     syncPlayback();
   }, [roomState?.playback, syncPlayback]);
 
+  // Automatic stream recovery watchdog (handles network drops, timeouts, 502s, socket reconnects)
+  const recoverVideoPlayback = useCallback(
+    (reason: string) => {
+      const video = videoRef.current;
+      if (!video || isRecoveringRef.current || !streamUrl) return;
+
+      isRecoveringRef.current = true;
+      console.warn(`[VideoPlayer] Automatic recovery triggered: ${reason}`);
+
+      const targetTime =
+        video.currentTime > 0
+          ? video.currentTime
+          : roomState?.playback?.currentTime || 0;
+      const shouldPlay = roomState?.playback?.isPlaying ?? false;
+
+      try {
+        video.pause();
+        // Re-assign src to force browser network engine to establish a fresh connection
+        video.src = streamUrl;
+        video.load();
+
+        const onMetadata = () => {
+          if (!videoRef.current) return;
+          try {
+            if (targetTime > 0 && targetTime < (videoRef.current.duration || 999999)) {
+              videoRef.current.currentTime = targetTime;
+            }
+            if (shouldPlay) {
+              videoRef.current.play().catch(() => {});
+            }
+          } finally {
+            isRecoveringRef.current = false;
+            lastProgressTimeRef.current = Date.now();
+            videoRef.current.removeEventListener('loadedmetadata', onMetadata);
+          }
+        };
+
+        video.addEventListener('loadedmetadata', onMetadata, { once: true });
+
+        // Safety timeout in case loadedmetadata fails to fire
+        setTimeout(() => {
+          if (isRecoveringRef.current) {
+            isRecoveringRef.current = false;
+            if (videoRef.current && shouldPlay && videoRef.current.paused) {
+              videoRef.current.play().catch(() => {});
+            }
+          }
+        }, 5000);
+      } catch (err) {
+        console.error('[VideoPlayer] Recovery error:', err);
+        isRecoveringRef.current = false;
+      }
+    },
+    [streamUrl, roomState?.playback]
+  );
+
+  // Forcibly push browser media engine to download video frames
+  const forceVideoFrameDownload = useCallback(
+    (reason: string) => {
+      const video = videoRef.current;
+      if (!video || !streamUrl) return;
+
+      console.log(`[VideoPlayer] Forcing video frame download! Reason: ${reason}`);
+
+      // 1. Ensure source is connected
+      if (!video.src || !video.src.includes(streamUrl)) {
+        video.src = streamUrl;
+      }
+      video.load();
+
+      // 2. Autoplay muted frame kick to activate C++ Blink media decoding pipeline
+      const shouldPlay = roomState?.playback?.isPlaying ?? false;
+      const prevMuted = video.muted;
+      video.muted = true;
+
+      video
+        .play()
+        .then(() => {
+          // If room is paused, pause after 300ms so frames are buffered without playing sound
+          if (!shouldPlay) {
+            setTimeout(() => {
+              if (videoRef.current && !roomState?.playback?.isPlaying) {
+                videoRef.current.pause();
+              }
+              if (videoRef.current) {
+                videoRef.current.muted = prevMuted;
+              }
+            }, 300);
+          } else {
+            video.muted = prevMuted;
+          }
+        })
+        .catch((err) => {
+          console.warn('[VideoPlayer] Autoplay frame kick caught:', err.message);
+          video.muted = prevMuted;
+        });
+    },
+    [streamUrl, roomState?.playback]
+  );
+
+  // Auto reload when streamUrl changes
+  useEffect(() => {
+    if (videoRef.current && streamUrl) {
+      forceVideoFrameDownload('stream_url_changed');
+      lastProgressTimeRef.current = Date.now();
+    }
+  }, [streamUrl, forceVideoFrameDownload]);
+
+  // Socket reconnect trigger: forcibly push frame download upon reconnecting after network drop
+  useEffect(() => {
+    if (reconnectCount > 0) {
+      console.log('[VideoPlayer] Network reconnected (count:', reconnectCount, ') - forcing video frame download!');
+      forceVideoFrameDownload('network_reconnected');
+    }
+  }, [reconnectCount, forceVideoFrameDownload]);
+
+  // Server force push preload listener
+  useEffect(() => {
+    if (!socket) return;
+    const handleForcePreload = () => {
+      console.log('[VideoPlayer] Received client:force_preload event from server');
+      forceVideoFrameDownload('server_push_preload');
+    };
+
+    socket.on('client:force_preload', handleForcePreload);
+    return () => {
+      socket.off('client:force_preload', handleForcePreload);
+    };
+  }, [socket, forceVideoFrameDownload]);
+
   // Video event listeners
   useEffect(() => {
     const video = videoRef.current;
@@ -210,11 +350,31 @@ export const VideoPlayer: React.FC = () => {
       }
     };
 
+    const handleError = () => {
+      console.warn('[VideoPlayer] Media error event:', video.error);
+      recoverVideoPlayback(`media_error_${video.error?.code || 'unknown'}`);
+    };
+
+    const handleStalled = () => {
+      const elapsed = Date.now() - lastProgressTimeRef.current;
+      if (elapsed > 6000 && (isPlaying || video.readyState < 3)) {
+        console.warn('[VideoPlayer] Stream stalled for >6s, auto-recovering...');
+        recoverVideoPlayback('stalled_timeout');
+      }
+    };
+
+    const handleProgress = () => {
+      lastProgressTimeRef.current = Date.now();
+    };
+
     video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
     video.addEventListener('ended', handleEnded);
+    video.addEventListener('error', handleError);
+    video.addEventListener('stalled', handleStalled);
+    video.addEventListener('progress', handleProgress);
 
     return () => {
       video.removeEventListener('timeupdate', handleTimeUpdate);
@@ -222,8 +382,32 @@ export const VideoPlayer: React.FC = () => {
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('error', handleError);
+      video.removeEventListener('stalled', handleStalled);
+      video.removeEventListener('progress', handleProgress);
     };
-  }, [activeVideo, syncPlayback, isAdmin, currentTime, sendPause]);
+  }, [activeVideo, syncPlayback, isAdmin, currentTime, sendPause, isPlaying, recoverVideoPlayback]);
+
+  // Watchdog timer (every 4 seconds) to ensure downloading never dies permanently
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const video = videoRef.current;
+      if (!video || isRecoveringRef.current || !streamUrl) return;
+
+      if (video.error) {
+        recoverVideoPlayback(`watchdog_error_${video.error.code}`);
+        return;
+      }
+
+      const shouldPlay = roomState?.playback?.isPlaying ?? false;
+      const elapsedSinceProgress = Date.now() - lastProgressTimeRef.current;
+      if (shouldPlay && video.paused && elapsedSinceProgress > 8000 && video.readyState < 3) {
+        recoverVideoPlayback('watchdog_playback_stalled');
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [streamUrl, roomState?.playback, recoverVideoPlayback]);
 
   // Controls auto-hide
   const handleMouseMove = () => {
@@ -247,7 +431,7 @@ export const VideoPlayer: React.FC = () => {
     return () => clearInterval(interval);
   }, [measurePing]);
 
-  // Periodic buffer health reporter & progressive background preloader (every 1s)
+  // Periodic buffer health reporter & bandwidth monitor (every 1s)
   useEffect(() => {
     const interval = setInterval(() => {
       const video = videoRef.current;
@@ -268,9 +452,29 @@ export const VideoPlayer: React.FC = () => {
 
       setBufferAheadSec(ahead);
 
-      const stats = VideoPreloader.getStats();
-      setSpeedKbps(stats.speedKbps);
-      setNetworkActivityKB(stats.networkActivityKB);
+      // Track buffer change to detect paused buffer limit and compute download speed
+      const deltaAhead = ahead - lastBufferAheadRef.current;
+      lastBufferAheadRef.current = ahead;
+
+      let isReadyForPlayback = false;
+      if (ahead >= 15) {
+        isReadyForPlayback = true;
+      } else if (video.paused && ahead >= 8) {
+        if (Math.abs(deltaAhead) < 0.3) {
+          bufferStallCountRef.current += 1;
+        } else {
+          bufferStallCountRef.current = 0;
+        }
+        // If buffer hasn't grown for 3s while paused, browser paused buffer is full
+        if (bufferStallCountRef.current >= 3) {
+          isReadyForPlayback = true;
+        }
+      }
+
+      // Smooth download speed estimation without duplicate range fetches
+      const speed = deltaAhead > 0 ? Math.round(deltaAhead * 3500) : (video.readyState >= 3 ? 2400 : 800);
+      setSpeedKbps(speed);
+      setNetworkActivityKB(Math.round(speed / 8));
 
       // Report buffer health to server
       sendBufferStatus({
@@ -278,15 +482,10 @@ export const VideoPlayer: React.FC = () => {
         bufferedEnd: video.buffered?.length ? video.buffered.end(video.buffered.length - 1) : 0,
         currentTime: cur,
         pingMs,
-        downloadSpeedKbps: stats.speedKbps,
+        downloadSpeedKbps: speed,
         isBuffering: video.readyState < 3,
+        isReadyForPlayback,
       });
-
-      // Background progressive range preloading to download minutes ahead
-      const targetSec = roomState?.bufferSync?.targetSeconds || 300;
-      if (streamUrl && ahead < targetSec) {
-        VideoPreloader.pump(streamUrl, ahead, targetSec);
-      }
     }, 1000);
 
     return () => clearInterval(interval);
@@ -471,8 +670,23 @@ export const VideoPlayer: React.FC = () => {
         networkActivityKB={networkActivityKB}
       />
 
-      {/* Smart Buffer Sync Overlay (لودینگ انیمیشنی برای دانلود حداقل ۵ دقیقه جلوتر و توقف هنگام کمتر از ۱ دقیقه) */}
-      <BufferSyncOverlay onForcePlay={() => sendForcePlay(currentTime)} />
+      {/* Smart Buffer Sync Overlay (لودینگ انیمیشنی برای دانلود چند دقیقه جلوتر و توقف هنگام افت بافر) */}
+      <BufferSyncOverlay
+        onForcePlay={() => sendForcePlay(currentTime)}
+        onInteractiveLoad={() => {
+          if (videoRef.current) {
+            videoRef.current.load();
+            videoRef.current
+              .play()
+              .then(() => {
+                if (!roomState?.playback?.isPlaying) {
+                  videoRef.current?.pause();
+                }
+              })
+              .catch(() => {});
+          }
+        }}
+      />
 
       {/* Custom Context Menu on Video */}
       {contextMenu && (

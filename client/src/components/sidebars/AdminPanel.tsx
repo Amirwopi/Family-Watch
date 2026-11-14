@@ -428,13 +428,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
                 <div className="flex items-center justify-between pt-1 border-t border-slate-800 text-[11px] text-slate-300">
                   <span>میزان دانلود اولیه جلوتر:</span>
                   <select
-                    value={settings.targetBufferMinutes || 5}
+                    value={settings.targetBufferMinutes || 3}
                     onChange={(e) => updateRoomSettings({ targetBufferMinutes: parseInt(e.target.value, 10) })}
                     className="px-2 py-1 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white"
                   >
-                    <option value={1}>۱ دقیقه جلوتر</option>
-                    <option value={3}>۳ دقیقه جلوتر</option>
-                    <option value={5}>۵ دقیقه جلوتر (توصیه شده)</option>
+                    <option value={1}>۱ دقیقه بافر سرور (سریع)</option>
+                    <option value={3}>۳ دقیقه بافر سرور (متعادل)</option>
+                    <option value={5}>۵ دقیقه بافر سرور (پایدار و توصیه شده)</option>
+                    <option value={15}>۱۵ دقیقه یا دانلود کامل فیلم روی سرور</option>
                   </select>
                 </div>
               )}
